@@ -144,6 +144,3 @@ python -m unittest discover -s tests -v
 
   然后用 `http://127.0.0.1:5050/...` 访问。
 
----
-
-你要不要我直接帮你生成一个 `README.md` 文件，放到项目里？这样你在 PyCharm 里点开就能看说明，不用翻聊天记录。
