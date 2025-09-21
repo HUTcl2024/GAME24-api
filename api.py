@@ -1,130 +1,75 @@
 # api.py
-# 纯 Python REST API（BaseHTTPRequestHandler），提供 24 点求解与校验
-
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
-import json
 import os
-import threading
-from typing import Any, Dict, Tuple
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
-import sys
-sys.setrecursionlimit(10000)
-
+# 和你的仓库保持一致：solve / check_expression
 from game24 import solve, check_expression
 
-APP_NAME = "Game24 REST API"
-APP_VERSION = "1.0.0"
-DEFAULT_HOST = os.environ.get("GAME24_HOST", "127.0.0.1")
-DEFAULT_PORT = int(os.environ.get("GAME24_PORT", "5000"))
+app = Flask(__name__)
+CORS(app)
 
-def json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, Any]):
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.end_headers()
-    handler.wfile.write(body)
+PORT = int(os.environ.get("GAME24_PORT", "5000"))
+HOST = os.environ.get("GAME24_HOST", "127.0.0.1")
 
-def parse_nums(value: str) -> Tuple[bool, Any]:
+def parse_nums_list(obj):
+    """
+    校验并转换 nums：必须是长度为 4 的数字数组
+    返回 int 列表，例如 [4, 7, 8, 8]
+    """
+    if not isinstance(obj, list):
+        raise ValueError("nums 必须是数组，例如 [4,7,8,8]")
+    if len(obj) != 4:
+        raise ValueError("nums 必须正好是 4 个数字")
     try:
-        parts = [p.strip() for p in value.split(",")]
-        nums = [int(x) for x in parts if x]
-        if len(nums) != 4:
-            return False, "nums 必须是 4 个整数，例如 nums=4,7,8,8"
-        return True, nums
+        nums = [int(x) for x in obj]
     except Exception:
-        return False, "nums 解析失败，示例：nums=4,7,8,8"
+        raise ValueError("nums 必须是整数数组，例如 [4,7,8,8]")
+    return nums
 
-class Handler(BaseHTTPRequestHandler):
-    server_version = f"{APP_NAME}/{APP_VERSION}"
-
-    def _send_error(self, status: int, code: str, message: str, details: Dict[str, Any] = None):
-        json_response(self, status, {
-            "error": {"code": code, "message": message, "details": details or {}}
-        })
-
-    def do_OPTIONS(self):
-        # CORS 预检
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, User-Agent")
-        self.end_headers()
-
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-        qs = parse_qs(parsed.query)
-
-        if path == "/":
-            return json_response(self, 200, {
-                "name": APP_NAME,
-                "version": APP_VERSION,
-                "endpoints": {
-                    "health": "GET /healthz",
-                    "solve": "GET /solve?nums=1,2,3,4",
-                    "check": "POST /check {expr, nums}",
-                }
-            })
-
-        if path == "/healthz":
-            return json_response(self, 200, {"status": "ok"})
-
-        if path == "/solve":
-            nums_q = qs.get("nums", [])
-            if not nums_q:
-                return self._send_error(400, "INVALID_QUERY", "缺少查询参数 nums，例如 /solve?nums=4,7,8,8")
-            ok, res = parse_nums(nums_q[0])
-            if not ok:
-                return self._send_error(400, "INVALID_NUMS", str(res))
-            try:
-                sols = solve(res)
-                return json_response(self, 200, {"count": len(sols), "solutions": sols})
-            except Exception as e:
-                return self._send_error(500, "SOLVE_ERROR", "求解失败", {"exception": str(e)})
-
-        # 未知路径
-        return self._send_error(404, "NOT_FOUND", f"路径不存在: {path}")
-
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        if path == "/check":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                raw = self.rfile.read(length) if length > 0 else b"{}"
-                data = json.loads(raw.decode("utf-8"))
-            except Exception:
-                return self._send_error(400, "INVALID_JSON", "请求体不是合法 JSON")
-
-            expr = data.get("expr")
-            nums = data.get("nums")
-            if not isinstance(expr, str) or not isinstance(nums, list):
-                return self._send_error(400, "INVALID_BODY", "需要字段 expr(string) 与 nums(array[int])")
-
-            if len(nums) != 4 or not all(isinstance(x, int) for x in nums):
-                return self._send_error(400, "INVALID_NUMS", "nums 必须为 4 个整数")
-
-            try:
-                ok = check_expression(expr, nums)
-                return json_response(self, 200, {"valid": ok})
-            except Exception as e:
-                return self._send_error(500, "CHECK_ERROR", "校验失败", {"exception": str(e)})
-
-        return self._send_error(404, "NOT_FOUND", f"路径不存在: {path}")
-
-def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
-    server = HTTPServer((host, port), Handler)
-    print(f"{APP_NAME} listening on http://{host}:{port}")
+@app.post("/solve")
+def solve_post():
+    """
+    官方入口：POST /solve
+    body: { "nums": [4,7,8,8] }
+    返回: { "nums": [...], "count": N, "solutions": [...] }
+    """
+    data = request.get_json(silent=True) or {}
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+        nums = parse_nums_list(data.get("nums"))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    try:
+        # 你的求解函数：返回可迭代（list/set等）
+        solutions = solve(nums)
+        sols = list(solutions) if not isinstance(solutions, list) else solutions
+        return jsonify({"nums": nums, "count": len(sols), "solutions": sols})
+    except Exception as e:
+        return jsonify({"error": f"求解失败: {e}"}), 500
+
+@app.post("/check")
+def check_post():
+    """
+    校验表达式是否用给定 4 数得出 24
+    body: { "expr": "(8/(7-4))*8", "nums": [4,7,8,8] }
+    返回: { "valid": true/false, "error": "...(可选)" }
+    """
+    data = request.get_json(silent=True) or {}
+    expr = data.get("expr", "")
+    if not expr or not isinstance(expr, str):
+        return jsonify({"valid": False, "error": "缺少或非法的 expr"}), 400
+    try:
+        nums = parse_nums_list(data.get("nums"))
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)}), 400
+
+    try:
+        ok = bool(check_expression(expr, nums))
+        return jsonify({"valid": ok})
+    except Exception as e:
+        return jsonify({"valid": False, "error": f"校验失败: {e}"}), 500
 
 if __name__ == "__main__":
-    run()
+    print(f"Game24 REST API listening on http://{HOST}:{PORT}")
+    app.run(host=HOST, port=PORT, debug=False)
